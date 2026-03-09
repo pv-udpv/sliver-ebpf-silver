@@ -1,0 +1,132 @@
+name: Silver CI — Build & Package
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+
+env:
+  GO_VERSION: '1.22'
+  CLANG_VERSION: '17'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            target_arch: x86
+            cc: clang-17
+          - goarch: arm64
+            target_arch: arm64
+            cc: clang-17
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang-17 llvm-17 libbpf-dev linux-headers-generic \
+            protobuf-compiler golang-goprotobuf-dev
+          sudo snap install --classic bpftool || true
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Install Go proto tools
+        run: |
+          go install google.golang.org/protobuf/cmd/protoc-gen-go@latest
+          go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@latest
+
+      - name: Generate vmlinux.h
+        run: |
+          mkdir -p .output
+          bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+
+      - name: Compile BPF object (${{ matrix.goarch }})
+        run: |
+          ${{ matrix.cc }} -g -O2 -target bpf \
+            -D__TARGET_ARCH_${{ matrix.target_arch }} \
+            -I. -Ibpf -I.output -I/usr/include \
+            -c bpf/silver.bpf.c \
+            -o .output/silver.bpf.o
+
+      - name: Generate proto
+        run: |
+          protoc --go_out=. --go-grpc_out=. \
+            --go_opt=paths=source_relative \
+            --go-grpc_opt=paths=source_relative \
+            proto/network.proto
+
+      - name: Generate bpf2go bindings
+        working-directory: cmd
+        run: |
+          go generate ./...
+
+      - name: Build silver-plugin (${{ matrix.goarch }})
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+        run: |
+          go build -buildmode=c-shared \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o silver-plugin-linux-${{ matrix.goarch }} \
+            ./cmd/...
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: silver-plugin-linux-${{ matrix.goarch }}
+          path: silver-plugin-linux-${{ matrix.goarch }}
+
+  package:
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/v')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download amd64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: silver-plugin-linux-amd64
+
+      - name: Download arm64 binary
+        uses: actions/download-artifact@v4
+        with:
+          name: silver-plugin-linux-arm64
+
+      - name: Package for Sliver Armory
+        run: |
+          mkdir -p armory-pkg
+          cp extension.json armory-pkg/
+          cp silver-plugin-linux-amd64 armory-pkg/
+          cp silver-plugin-linux-arm64 armory-pkg/
+          tar -czf silver-extension.tar.gz -C armory-pkg .
+
+      - name: Sign with minisign
+        run: |
+          go install aead.dev/minisign/cmd/minisign@latest
+          if [ -n "${{ secrets.MINISIGN_SECRET_KEY }}" ]; then
+            echo "${{ secrets.MINISIGN_SECRET_KEY }}" > /tmp/minisign.key
+            minisign -Sm silver-extension.tar.gz -s /tmp/minisign.key
+            rm /tmp/minisign.key
+          fi
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            silver-extension.tar.gz
+            silver-extension.tar.gz.minisig
+            silver-plugin-linux-amd64
+            silver-plugin-linux-arm64
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
