@@ -1,0 +1,262 @@
+syntax = "proto3";
+
+package network;
+
+service Network {
+    rpc StreamEvents(StreamEventsRequest) returns (stream NetworkEvent);
+    rpc ListFlows(ListFlowsRequest) returns (ListFlowsResponse);
+    rpc GetFlow(GetFlowRequest) returns (GetFlowResponse);
+    rpc GetStats(GetStatsRequest) returns (GetStatsResponse);
+    rpc SetPolicy(SetPolicyRequest) returns (SetPolicyResponse);
+    rpc GetPolicy(GetPolicyRequest) returns (GetPolicyResponse);
+    rpc ResolveDNS(ResolveDNSRequest) returns (ResolveDNSResponse);
+}
+
+enum L4Protocol {
+    L4_UNKNOWN = 0;
+    L4_TCP     = 1;
+    L4_UDP     = 2;
+    L4_ICMP    = 3;
+    L4_SCTP    = 4;
+}
+
+enum L7Protocol {
+    L7_UNKNOWN    = 0;
+    L7_HTTP       = 1;
+    L7_HTTPS_TLS  = 2;
+    L7_DNS        = 3;
+    L7_GRPC       = 4;
+    L7_SSH        = 5;
+    L7_WEBSOCKET  = 6;
+    L7_QUIC       = 7;
+    L7_NTP        = 8;
+    L7_SMTP       = 9;
+    L7_REDIS      = 10;
+    L7_POSTGRES   = 11;
+    L7_MYSQL      = 12;
+}
+
+enum FlowDirection {
+    DIRECTION_UNKNOWN = 0;
+    INGRESS           = 1;
+    EGRESS            = 2;
+}
+
+enum FlowState {
+    STATE_UNKNOWN     = 0;
+    STATE_SYN_SENT    = 1;
+    STATE_ESTABLISHED = 2;
+    STATE_FIN_WAIT    = 3;
+    STATE_CLOSED      = 4;
+    STATE_LISTEN      = 5;
+}
+
+enum EventType {
+    EVENT_FLOW_START   = 0;
+    EVENT_FLOW_DATA    = 1;
+    EVENT_FLOW_END     = 2;
+    EVENT_POLICY_HIT   = 3;
+    EVENT_DNS_QUERY    = 4;
+    EVENT_DNS_RESPONSE = 5;
+    EVENT_ANOMALY      = 6;
+}
+
+enum PolicyAction {
+    ACTION_ALLOW   = 0;
+    ACTION_DENY    = 1;
+    ACTION_SAMPLE  = 2;
+    ACTION_LOG     = 3;
+    ACTION_REDIRECT = 4;
+}
+
+message ProcessIdentity {
+    uint32 pid       = 1;
+    uint32 tid       = 2;
+    uint32 uid       = 3;
+    uint32 gid       = 4;
+    string comm      = 5;
+    string cmdline   = 6;
+    uint64 cgroup_id = 7;
+    string container_id = 8;
+    uint32 ppid      = 9;
+}
+
+message FlowKey {
+    string src_ip    = 1;
+    string dst_ip    = 2;
+    uint32 src_port  = 3;
+    uint32 dst_port  = 4;
+    L4Protocol l4    = 5;
+    FlowDirection direction = 6;
+}
+
+message ProtocolClassification {
+    L4Protocol l4_protocol = 1;
+    L7Protocol l7_protocol = 2;
+    string     l7_detail   = 3;
+    string     tls_sni     = 4;
+    string     tls_version = 5;
+    string     http_method = 6;
+    string     http_host   = 7;
+    string     dns_qname   = 8;
+    uint32     dns_qtype   = 9;
+}
+
+message Target {
+    string ip        = 1;
+    uint32 port      = 2;
+    string dns_name  = 3;
+    string asn_org   = 4;
+    string geo_country = 5;
+    string zone       = 6;
+}
+
+message FlowMetrics {
+    uint64 packets_in   = 1;
+    uint64 packets_out  = 2;
+    uint64 bytes_in     = 3;
+    uint64 bytes_out    = 4;
+    uint64 retransmits  = 5;
+    uint32 rtt_us       = 6;
+    uint64 first_seen_ns = 7;
+    uint64 last_seen_ns  = 8;
+}
+
+message NetworkEvent {
+    EventType     type      = 1;
+    uint64        timestamp_ns = 2;
+    ProcessIdentity process = 3;
+    FlowKey       flow_key  = 4;
+    ProtocolClassification classification = 5;
+    Target        target    = 6;
+    FlowState     state     = 7;
+    FlowMetrics   metrics   = 8;
+    PolicyVerdict verdict    = 9;
+    DNSEvent      dns       = 10;
+    bytes         sample_payload = 11;
+}
+
+message PolicyVerdict {
+    PolicyAction action     = 1;
+    string       rule_id    = 2;
+    string       reason     = 3;
+}
+
+message DNSEvent {
+    string qname   = 1;
+    uint32 qtype   = 2;
+    uint32 rcode   = 3;
+    repeated string answers = 4;
+    uint32 ttl     = 5;
+}
+
+message StreamEventsRequest {
+    repeated uint32 pids          = 1;
+    repeated string process_names = 2;
+    repeated L4Protocol l4_filter = 3;
+    repeated L7Protocol l7_filter = 4;
+    repeated EventType event_types = 5;
+    FlowDirection direction_filter = 6;
+    string dst_cidr_filter         = 7;
+    bool include_payload           = 8;
+    uint32 payload_max_bytes       = 9;
+}
+
+message ListFlowsRequest {
+    repeated uint32 pids  = 1;
+    FlowState state_filter = 2;
+    uint32 limit           = 3;
+    string page_token      = 4;
+}
+
+message ListFlowsResponse {
+    repeated FlowEntry flows = 1;
+    string next_page_token   = 2;
+    uint32 total_count       = 3;
+}
+
+message FlowEntry {
+    string          flow_id = 1;
+    ProcessIdentity process = 2;
+    FlowKey         key     = 3;
+    ProtocolClassification classification = 4;
+    Target          target  = 5;
+    FlowState       state   = 6;
+    FlowMetrics     metrics = 7;
+}
+
+message GetFlowRequest {
+    oneof selector {
+        string  flow_id  = 1;
+        FlowKey flow_key = 2;
+    }
+}
+
+message GetFlowResponse {
+    FlowEntry flow = 1;
+}
+
+message GetStatsRequest {
+    enum GroupBy {
+        GROUP_BY_PROCESS   = 0;
+        GROUP_BY_PROTOCOL  = 1;
+        GROUP_BY_TARGET    = 2;
+        GROUP_BY_CONTAINER = 3;
+        GROUP_BY_POLICY    = 4;
+    }
+    GroupBy group_by          = 1;
+    uint64  since_timestamp_ns = 2;
+    uint32  top_n             = 3;
+}
+
+message GetStatsResponse {
+    repeated StatEntry entries = 1;
+}
+
+message StatEntry {
+    string key           = 1;
+    uint64 total_packets = 2;
+    uint64 total_bytes   = 3;
+    uint32 active_flows  = 4;
+    uint32 denied_flows  = 5;
+}
+
+message SetPolicyRequest {
+    repeated PolicyRule rules = 1;
+    bool replace_all          = 2;
+}
+
+message PolicyRule {
+    string       rule_id      = 1;
+    uint32       priority     = 2;
+    PolicyAction action       = 3;
+    string       src_cidr     = 4;
+    string       dst_cidr     = 5;
+    uint32       dst_port     = 6;
+    L4Protocol   l4_protocol  = 7;
+    L7Protocol   l7_protocol  = 8;
+    string       process_name = 9;
+    uint64       cgroup_id    = 10;
+    string       dns_pattern  = 11;
+}
+
+message SetPolicyResponse {
+    uint32 rules_loaded = 1;
+    repeated string errors = 2;
+}
+
+message GetPolicyRequest {}
+
+message GetPolicyResponse {
+    repeated PolicyRule rules = 1;
+}
+
+message ResolveDNSRequest {
+    string ip = 1;
+}
+
+message ResolveDNSResponse {
+    string dns_name = 1;
+    uint32 ttl      = 2;
+    uint64 observed_at_ns = 3;
+}

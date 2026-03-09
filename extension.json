@@ -1,0 +1,18 @@
+{
+    "name": "Silver",
+    "version": "0.1.0",
+    "command_name": "silver",
+    "original_author": "pv-udpv",
+    "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
+    "help": "eBPF network accountability — correlate every packet to process, protocol, purpose, target",
+    "long_help": "Silver deploys 6 eBPF programs for full packet accountability on Linux targets. Sub-commands: flows, stream, stats, dns, policy.",
+    "entrypoint": "SilverEntry",
+    "allow_args": true,
+    "default_args": "flows",
+    "is_reflective": true,
+    "is_assembly": false,
+    "files": [
+        {"os": "linux", "arch": "amd64", "path": "silver-plugin-linux-amd64"},
+        {"os": "linux", "arch": "arm64", "path": "silver-plugin-linux-arm64"}
+    ]
+}
