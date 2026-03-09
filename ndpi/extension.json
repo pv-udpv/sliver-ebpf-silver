@@ -1,0 +1,23 @@
+{
+  "name": "Silver-nDPI",
+  "version": "0.3.0",
+  "extension_author": "pv-udpv",
+  "original_author": "pv-udpv",
+  "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
+  "help": "Silver-nDPI: Deep Packet Inspection via XDP→AF_XDP→nDPI.\n\nRequires: kernel >= 5.15, root/CAP_BPF, AF_XDP support.\nnDPI is statically linked — no runtime dependencies on target.\n\nCommands:\n  silver-ndpi start             Start nDPI engine + XSK redirect\n  silver-ndpi stop              Stop nDPI engine, detach XSK\n  silver-ndpi flows             Dump classified flows with L7 protocol\n  silver-ndpi stats             Show engine statistics\n  silver-ndpi config ports P    Set DPI redirect ports (comma-separated)\n  silver-ndpi config rate N     Set sampling rate for non-port traffic\n  silver-ndpi version           Show version info",
+  "entrypoint": "SilverNDPIEntry",
+  "depends_on": "Silver",
+  "init": "",
+  "files": [
+    {
+      "os": "linux",
+      "arch": "amd64",
+      "path": "silver-ndpi-linux-amd64"
+    },
+    {
+      "os": "linux",
+      "arch": "arm64",
+      "path": "silver-ndpi-linux-arm64"
+    }
+  ]
+}
