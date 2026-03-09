@@ -1,18 +1,28 @@
 {
-    "name": "silver-armory",
-    "armory_version": "1.0",
-    "entries": [
+  "name": "sliver-ebpf-silver",
+  "url": "https://raw.githubusercontent.com/pv-udpv/sliver-ebpf-silver/main/armory-index.json",
+  "extensions": [
+    {
+      "name": "Silver",
+      "command_name": "silver",
+      "version": "0.3.0",
+      "extension_author": "pv-udpv",
+      "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
+      "description": "eBPF network accountability \u2014 process/flow/L4/L7 correlation with nDPI DPI",
+      "packages": [
         {
-            "name": "Silver",
-            "command_name": "silver",
-            "pkg_type": "extension",
-            "version": "0.1.0",
-            "author": "pv-udpv",
-            "help": "eBPF packet accountability — every packet correlated to process, protocol, purpose, target",
-            "url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension.tar.gz",
-            "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension.tar.gz.minisig",
-            "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
-            "depends_on": []
+          "os": "linux",
+          "arch": "amd64",
+          "download_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-amd64.tar.gz",
+          "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-amd64.tar.gz.minisig"
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "download_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-arm64.tar.gz",
+          "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-arm64.tar.gz.minisig"
         }
-    ]
+      ]
+    }
+  ]
 }

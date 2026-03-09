@@ -1,19 +1,33 @@
 {
-    "name": "Silver",
-    "version": "0.1.0",
-    "command_name": "silver",
-    "original_author": "pv-udpv",
-    "extension_author": "pv-udpv",
-    "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
-    "help": "eBPF network accountability — correlate every packet to process, protocol, purpose, target",
-    "long_help": "Silver deploys 6 eBPF programs (cgroup/sock_create, cgroup/connect4, sock_ops, XDP, TC ingress/egress via TCX) for full packet accountability on Linux.\n\nSub-commands:\n  silver start     — Load BPF programs, attach to cgroup + interface\n  silver stop      — Detach all BPF programs, clean up maps\n  silver flows     — Dump flow table (5-tuple → process + protocol + DNS)\n  silver stats     — Dump per-reason aggregate counters\n  silver dns       — Dump DNS resolution cache (IP → domain)\n  silver stream    — Stream events via implant callback\n  silver policy    — Show loaded policy rules\n  silver version   — Print version",
-    "entrypoint": "SilverEntry",
-    "allow_args": true,
-    "default_args": "flows",
-    "is_reflective": true,
-    "is_assembly": false,
-    "files": [
-        {"os": "linux", "arch": "amd64", "path": "silver-plugin-linux-amd64"},
-        {"os": "linux", "arch": "arm64", "path": "silver-plugin-linux-arm64"}
-    ]
+  "name": "Silver",
+  "version": "0.3.0",
+  "command_name": "silver",
+  "extension_author": "pv-udpv",
+  "original_author": "pv-udpv",
+  "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
+  "help": "Silver eBPF network accountability plugin \u2014 full process-to-packet correlation with nDPI L7 DPI",
+  "entrypoint": "SilverEntry",
+  "depends_on": "",
+  "init": "",
+  "files": [
+    {"os": "linux", "arch": "amd64", "path": "silver-plugin-linux-amd64"},
+    {"os": "linux", "arch": "arm64", "path": "silver-plugin-linux-arm64"}
+  ],
+  "arguments": [
+    {"name": "command", "type": "string", "desc": "Sub-command: start|stop|flows|stats|dns|stream|policy|ndpi-start|ndpi-stop|ndpi-flows|ndpi-config|version"}
+  ],
+  "sub_commands": [
+    {"name": "start", "desc": "Attach all BPF programs (cgroup + sock_ops + XDP)"},
+    {"name": "stop", "desc": "Detach all BPF programs and clean up"},
+    {"name": "flows", "desc": "Dump current flow table with process correlation"},
+    {"name": "stats", "desc": "Show per-CPU decision statistics"},
+    {"name": "dns", "desc": "Dump observed DNS cache"},
+    {"name": "stream", "desc": "Stream ring buffer events via callback"},
+    {"name": "policy", "desc": "Show active policy rules"},
+    {"name": "ndpi-start", "desc": "Start nDPI L7 DPI engine with AF_XDP consumer"},
+    {"name": "ndpi-stop", "desc": "Stop nDPI engine and AF_XDP consumer"},
+    {"name": "ndpi-flows", "desc": "Dump nDPI classified flows with L7 protocol names"},
+    {"name": "ndpi-config", "desc": "Configure DPI: ports, sample-rate, ttl"},
+    {"name": "version", "desc": "Show Silver version"}
+  ]
 }
