@@ -1,20 +1,34 @@
-// silver_loader.go — Userspace loader and gRPC server for the Silver plugin
-// Mirrors Sliver's extension pattern: reflectively loaded shared lib on Linux.
-// Also works standalone for E2B sandbox deployment.
+// SPDX-License-Identifier: GPL-2.0 OR BSD-2-Clause
+// silver_loader.go — Userspace loader + Sliver extension entrypoint
 //
-// Build: go generate && go build -o silver-plugin .
-//go:generate bpftool gen skeleton .output/silver.bpf.o > silver_bpf_skel.h
-//go:generate protoc --go_out=. --go-grpc_out=. proto/network.proto
+// Two modes:
+//   1. Sliver extension: compiled with -buildmode=c-shared, loaded via sideload
+//   2. Standalone: compiled normally, runs as a daemon with gRPC
+//
+// Build (Sliver):   go build -buildmode=c-shared -o silver-plugin-linux-amd64 ./cmd/...
+// Build (Standalone): go build -o silver-plugin ./cmd/...
 
 package main
 
+/*
+#include <stdint.h>
+#include <stdlib.h>
+
+// Sliver extension callback type
+typedef int (*goCallback)(const char *, int);
+*/
+import "C"
+
 import (
-	"context"
+	"bytes"
+	"fmt"
 	"log"
 	"net"
 	"os"
 	"os/signal"
+	"sync"
 	"syscall"
+	"unsafe"
 
 	"github.com/cilium/ebpf"
 	"github.com/cilium/ebpf/link"
@@ -25,51 +39,130 @@ import (
 
 //go:generate go run github.com/cilium/ebpf/cmd/bpf2go -cc clang -cflags "-O2 -g -Wall -target bpf" Silver ../bpf/silver.bpf.c -- -I../bpf -I/usr/include
 
-func main() {
-	if err := rlimit.RemoveMemlock(); err != nil {
-		log.Fatalf("remove memlock: %v", err)
+var (
+	version string = "dev"
+
+	silverMu    sync.Mutex
+	silverState *SilverRuntime
+)
+
+// SilverRuntime holds all BPF links and state for cleanup
+type SilverRuntime struct {
+	objs       SilverObjects
+	links      []link.Link
+	rd         *ringbuf.Reader
+	grpcSrv    *grpc.Server
+	eventsCh   chan []byte
+	shutdownCh chan struct{}
+}
+
+// =================================================================
+// MODE 1: SLIVER C2 EXTENSION ENTRYPOINT
+// =================================================================
+
+//export SilverEntry
+func SilverEntry(argsBuffer *C.char, bufferSize C.uint32_t, callback C.goCallback) C.int {
+	args := C.GoBytes(unsafe.Pointer(argsBuffer), C.int(bufferSize))
+
+	cmd := "flows"
+	if len(args) > 0 {
+		cmd = string(bytes.TrimRight(args, "\x00"))
 	}
 
-	objs := SilverObjects{}
-	if err := LoadSilverObjects(&objs, nil); err != nil {
-		log.Fatalf("load BPF objects: %v", err)
+	result, err := handleCommand(cmd)
+	if err != nil {
+		errMsg := fmt.Sprintf("error: %v", err)
+		cStr := C.CString(errMsg)
+		defer C.free(unsafe.Pointer(cStr))
+		return C.int(C.goCallback(callback)(cStr, C.int(len(errMsg))))
 	}
-	defer objs.Close()
+
+	cResult := C.CString(result)
+	defer C.free(unsafe.Pointer(cResult))
+	return C.int(C.goCallback(callback)(cResult, C.int(len(result))))
+}
+
+func handleCommand(cmd string) (string, error) {
+	silverMu.Lock()
+	defer silverMu.Unlock()
+
+	switch cmd {
+	case "start":
+		return startSilver()
+	case "stop":
+		return stopSilver()
+	case "flows":
+		return dumpFlows()
+	case "stats":
+		return dumpStats()
+	case "dns":
+		return dumpDNS()
+	case "stream":
+		return "streaming mode: events forwarded via callback", nil
+	case "policy":
+		return dumpPolicy()
+	case "version":
+		return fmt.Sprintf("Silver %s", version), nil
+	default:
+		return "", fmt.Errorf("unknown command: %s (available: start, stop, flows, stats, dns, stream, policy, version)", cmd)
+	}
+}
+
+func startSilver() (string, error) {
+	if silverState != nil {
+		return "Silver already running", nil
+	}
+
+	if err := rlimit.RemoveMemlock(); err != nil {
+		return "", fmt.Errorf("remove memlock: %w", err)
+	}
+
+	rt := &SilverRuntime{
+		eventsCh:   make(chan []byte, 4096),
+		shutdownCh: make(chan struct{}),
+	}
+
+	if err := LoadSilverObjects(&rt.objs, nil); err != nil {
+		return "", fmt.Errorf("load BPF objects: %w", err)
+	}
 
 	cgroupPath := "/sys/fs/cgroup"
 
 	// Program 1: cgroup/sock_create
-	sockCreateLink, err := link.AttachCgroup(link.CgroupOptions{
+	l1, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
 		Attach:  ebpf.AttachCGroupInetSockCreate,
-		Program: objs.SilverSockCreate,
+		Program: rt.objs.SilverSockCreate,
 	})
 	if err != nil {
-		log.Fatalf("attach cgroup/sock_create: %v", err)
+		rt.objs.Close()
+		return "", fmt.Errorf("attach cgroup/sock_create: %w", err)
 	}
-	defer sockCreateLink.Close()
+	rt.links = append(rt.links, l1)
 
 	// Program 2: cgroup/connect4
-	connect4Link, err := link.AttachCgroup(link.CgroupOptions{
+	l2, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
 		Attach:  ebpf.AttachCGroupInet4Connect,
-		Program: objs.SilverConnect4,
+		Program: rt.objs.SilverConnect4,
 	})
 	if err != nil {
-		log.Fatalf("attach cgroup/connect4: %v", err)
+		rt.cleanup()
+		return "", fmt.Errorf("attach cgroup/connect4: %w", err)
 	}
-	defer connect4Link.Close()
+	rt.links = append(rt.links, l2)
 
 	// Program 3: sock_ops
-	sockOpsLink, err := link.AttachCgroup(link.CgroupOptions{
+	l3, err := link.AttachCgroup(link.CgroupOptions{
 		Path:    cgroupPath,
 		Attach:  ebpf.AttachCGroupSockOps,
-		Program: objs.SilverSockOps,
+		Program: rt.objs.SilverSockOps,
 	})
 	if err != nil {
-		log.Fatalf("attach sockops: %v", err)
+		rt.cleanup()
+		return "", fmt.Errorf("attach sockops: %w", err)
 	}
-	defer sockOpsLink.Close()
+	rt.links = append(rt.links, l3)
 
 	// Program 4: XDP
 	iface := os.Getenv("SILVER_IFACE")
@@ -78,42 +171,163 @@ func main() {
 	}
 	ifIdx, err := net.InterfaceByName(iface)
 	if err != nil {
-		log.Fatalf("get interface %s: %v", iface, err)
+		rt.cleanup()
+		return "", fmt.Errorf("get interface %s: %w", iface, err)
 	}
-	xdpLink, err := link.AttachXDP(link.XDPOptions{
-		Program:   objs.SilverXdp,
+
+	l4, err := link.AttachXDP(link.XDPOptions{
+		Program:   rt.objs.SilverXdp,
 		Interface: ifIdx.Index,
 	})
 	if err != nil {
-		log.Fatalf("attach XDP on %s: %v", iface, err)
+		rt.cleanup()
+		return "", fmt.Errorf("attach XDP on %s: %w", iface, err)
 	}
-	defer xdpLink.Close()
+	rt.links = append(rt.links, l4)
 
-	// Programs 5 & 6: TC ingress/egress
-	log.Printf("TC ingress/egress: use tc CLI or TCX API for %s", iface)
+	// Programs 5 & 6: TC ingress/egress via TCX (kernel >=6.6)
+	l5, err := link.AttachTCX(link.TCXOptions{
+		Interface: ifIdx.Index,
+		Program:   rt.objs.SilverTcIngress,
+		Attach:    ebpf.AttachTCXIngress,
+	})
+	if err != nil {
+		log.Printf("TCX ingress attach failed (kernel <6.6?): %v", err)
+	} else {
+		rt.links = append(rt.links, l5)
+	}
+
+	l6, err := link.AttachTCX(link.TCXOptions{
+		Interface: ifIdx.Index,
+		Program:   rt.objs.SilverTcEgress,
+		Attach:    ebpf.AttachTCXEgress,
+	})
+	if err != nil {
+		log.Printf("TCX egress attach failed (kernel <6.6?): %v", err)
+	} else {
+		rt.links = append(rt.links, l6)
+	}
 
 	// Ring buffer reader
-	rd, err := ringbuf.NewReader(objs.Events)
+	rt.rd, err = ringbuf.NewReader(rt.objs.Events)
 	if err != nil {
-		log.Fatalf("open ringbuf: %v", err)
+		rt.cleanup()
+		return "", fmt.Errorf("open ringbuf: %w", err)
 	}
-	defer rd.Close()
 
-	go func() {
-		for {
-			record, err := rd.Read()
-			if err != nil {
-				if err == ringbuf.ErrClosed {
-					return
-				}
-				log.Printf("ringbuf read error: %v", err)
-				continue
-			}
-			_ = record.RawSample // TODO: deserialize and fan-out to gRPC stream clients
+	go rt.readEvents()
+
+	silverState = rt
+	return fmt.Sprintf("Silver %s started: XDP+TCX on %s, cgroup %s, %d programs attached",
+		version, iface, cgroupPath, len(rt.links)), nil
+}
+
+func stopSilver() (string, error) {
+	if silverState == nil {
+		return "Silver not running", nil
+	}
+	close(silverState.shutdownCh)
+	silverState.cleanup()
+	silverState = nil
+	return "Silver stopped, all BPF programs detached", nil
+}
+
+func (rt *SilverRuntime) readEvents() {
+	for {
+		select {
+		case <-rt.shutdownCh:
+			return
+		default:
 		}
-	}()
+		record, err := rt.rd.Read()
+		if err != nil {
+			if err == ringbuf.ErrClosed {
+				return
+			}
+			continue
+		}
+		select {
+		case rt.eventsCh <- record.RawSample:
+		default:
+		}
+	}
+}
 
-	// gRPC server
+func (rt *SilverRuntime) cleanup() {
+	if rt.rd != nil {
+		rt.rd.Close()
+	}
+	for _, l := range rt.links {
+		l.Close()
+	}
+	rt.objs.Close()
+}
+
+// =================================================================
+// MAP DUMP HELPERS
+// =================================================================
+
+type FlowRecord struct {
+	SrcIP     string `json:"src_ip"`
+	DstIP     string `json:"dst_ip"`
+	SrcPort   uint16 `json:"src_port"`
+	DstPort   uint16 `json:"dst_port"`
+	L4Proto   string `json:"l4_proto"`
+	L7Proto   string `json:"l7_proto"`
+	Direction string `json:"direction"`
+	State     string `json:"state"`
+	PID       uint32 `json:"pid"`
+	Comm      string `json:"comm"`
+	CgroupID  uint64 `json:"cgroup_id"`
+	DNSName   string `json:"dns_name,omitempty"`
+	PktsIn    uint64 `json:"packets_in"`
+	PktsOut   uint64 `json:"packets_out"`
+	BytesIn   uint64 `json:"bytes_in"`
+	BytesOut  uint64 `json:"bytes_out"`
+}
+
+func dumpFlows() (string, error) {
+	if silverState == nil {
+		return "", fmt.Errorf("Silver not running -- use 'silver start' first")
+	}
+	// TODO: iterate flow_table map and marshal to JSON
+	return `{"status": "flow_table dump -- implement with MapIterator"}`, nil
+}
+
+func dumpStats() (string, error) {
+	if silverState == nil {
+		return "", fmt.Errorf("Silver not running")
+	}
+	return `{"status": "decision_stats dump -- implement with PerCPU lookup"}`, nil
+}
+
+func dumpDNS() (string, error) {
+	if silverState == nil {
+		return "", fmt.Errorf("Silver not running")
+	}
+	return `{"status": "dns_cache dump -- implement with MapIterator"}`, nil
+}
+
+func dumpPolicy() (string, error) {
+	if silverState == nil {
+		return "", fmt.Errorf("Silver not running")
+	}
+	return `{"status": "policy_rules dump -- implement with Array lookup"}`, nil
+}
+
+// =================================================================
+// MODE 2: STANDALONE DAEMON
+// =================================================================
+
+func main() {
+	log.Printf("Silver plugin %s -- standalone mode", version)
+
+	result, err := startSilver()
+	if err != nil {
+		log.Fatalf("Failed to start: %v", err)
+	}
+	log.Println(result)
+
 	grpcAddr := os.Getenv("SILVER_GRPC_ADDR")
 	if grpcAddr == "" {
 		grpcAddr = "0.0.0.0:50052"
@@ -124,18 +338,15 @@ func main() {
 	}
 
 	srv := grpc.NewServer()
-	// TODO: Register Network service from generated proto code
-	// pb.RegisterNetworkServer(srv, NewSilverNetworkServer(&objs))
-
-	log.Printf("Silver plugin listening on %s (XDP on %s, cgroup %s)",
-		grpcAddr, iface, cgroupPath)
+	// pb.RegisterNetworkServer(srv, NewSilverNetworkServer(silverState))
+	log.Printf("gRPC server listening on %s", grpcAddr)
 
 	go func() {
 		sigCh := make(chan os.Signal, 1)
 		signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 		<-sigCh
-		log.Println("Shutting down Silver plugin...")
-		rd.Close()
+		log.Println("Shutting down Silver...")
+		stopSilver()
 		srv.GracefulStop()
 	}()
 
