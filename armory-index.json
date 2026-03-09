@@ -8,7 +8,7 @@
       "version": "0.3.0",
       "extension_author": "pv-udpv",
       "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
-      "description": "eBPF network accountability \u2014 process/flow/L4/L7 correlation with nDPI DPI",
+      "description": "eBPF network accountability — process/flow/L4 correlation via cgroup+sockops+XDP",
       "packages": [
         {
           "os": "linux",
@@ -21,6 +21,29 @@
           "arch": "arm64",
           "download_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-arm64.tar.gz",
           "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-extension-linux-arm64.tar.gz.minisig"
+        }
+      ]
+    },
+    {
+      "name": "Silver-nDPI",
+      "command_name": "silver-ndpi",
+      "version": "0.3.0",
+      "extension_author": "pv-udpv",
+      "repo_url": "https://github.com/pv-udpv/sliver-ebpf-silver",
+      "description": "L7 Deep Packet Inspection via XDP→AF_XDP→nDPI (300+ protocols, no TC needed)",
+      "depends_on": "Silver",
+      "packages": [
+        {
+          "os": "linux",
+          "arch": "amd64",
+          "download_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-ndpi-linux-amd64.tar.gz",
+          "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-ndpi-linux-amd64.tar.gz.minisig"
+        },
+        {
+          "os": "linux",
+          "arch": "arm64",
+          "download_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-ndpi-linux-arm64.tar.gz",
+          "sig_url": "https://github.com/pv-udpv/sliver-ebpf-silver/releases/latest/download/silver-ndpi-linux-arm64.tar.gz.minisig"
         }
       ]
     }
