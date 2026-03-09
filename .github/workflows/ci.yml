@@ -3,16 +3,17 @@ name: Silver CI — Build & Package
 on:
   push:
     branches: [main]
-    tags: ['v*']
+    tags: ['v*', 'ndpi-v*']
   pull_request:
     branches: [main]
 
 env:
   GO_VERSION: '1.22'
   CLANG_VERSION: '17'
+  NDPI_VERSION: '4.10'
 
 jobs:
-  build:
+  build-silver:
     runs-on: ubuntu-latest
     strategy:
       matrix:
@@ -47,7 +48,8 @@ jobs:
       - name: Generate vmlinux.h
         run: |
           mkdir -p .output
-          bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h
+          bpftool btf dump file /sys/kernel/btf/vmlinux format c > vmlinux.h || \
+            cp bpf/vmlinux_shim.h vmlinux.h
 
       - name: Compile BPF object (${{ matrix.goarch }})
         run: |
@@ -66,8 +68,7 @@ jobs:
 
       - name: Generate bpf2go bindings
         working-directory: cmd
-        run: |
-          go generate ./...
+        run: go generate ./...
 
       - name: Build silver-plugin (${{ matrix.goarch }})
         env:
@@ -85,30 +86,104 @@ jobs:
           name: silver-plugin-linux-${{ matrix.goarch }}
           path: silver-plugin-linux-${{ matrix.goarch }}
 
-  package:
-    needs: build
+  build-ndpi:
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/v')
+    strategy:
+      matrix:
+        include:
+          - goarch: amd64
+            cc: gcc
+            cxx: g++
+          - goarch: arm64
+            cc: aarch64-linux-gnu-gcc
+            cxx: aarch64-linux-gnu-g++
+
     steps:
       - uses: actions/checkout@v4
 
-      - name: Download amd64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: silver-plugin-linux-amd64
-
-      - name: Download arm64 binary
-        uses: actions/download-artifact@v4
-        with:
-          name: silver-plugin-linux-arm64
-
-      - name: Package for Sliver Armory
+      - name: Install cross-compile tools
+        if: matrix.goarch == 'arm64'
         run: |
-          mkdir -p armory-pkg
-          cp extension.json armory-pkg/
-          cp silver-plugin-linux-amd64 armory-pkg/
-          cp silver-plugin-linux-arm64 armory-pkg/
-          tar -czf silver-extension.tar.gz -C armory-pkg .
+          sudo apt-get update
+          sudo apt-get install -y gcc-aarch64-linux-gnu g++-aarch64-linux-gnu
+
+      - name: Build nDPI static library (${{ matrix.goarch }})
+        run: |
+          sudo apt-get install -y autoconf automake libtool pkg-config libpcap-dev
+          wget https://github.com/ntop/nDPI/archive/refs/tags/${{ env.NDPI_VERSION }}.tar.gz
+          tar xzf ${{ env.NDPI_VERSION }}.tar.gz
+          cd nDPI-${{ env.NDPI_VERSION }}
+          ./autogen.sh
+          CC=${{ matrix.cc }} CXX=${{ matrix.cxx }} \
+            ./configure --host=${{ matrix.goarch == 'arm64' && 'aarch64-linux-gnu' || 'x86_64-linux-gnu' }} \
+            --enable-static --disable-shared
+          make -j$(nproc)
+          sudo make install
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: ${{ env.GO_VERSION }}
+
+      - name: Compile XSK BPF programs
+        run: |
+          mkdir -p .output
+          clang-17 -g -O2 -target bpf -D__TARGET_ARCH_x86 \
+            -I. -Ibpf -I/usr/include \
+            -c bpf/silver_xsk_noCORE.bpf.c \
+            -o .output/silver_xsk.bpf.o
+
+      - name: Build silver-ndpi-plugin (${{ matrix.goarch }})
+        env:
+          GOARCH: ${{ matrix.goarch }}
+          CGO_ENABLED: 1
+          CGO_LDFLAGS: "-Wl,-Bstatic -lndpi -Wl,-Bdynamic -lm -lpthread"
+        run: |
+          go build -buildmode=c-shared -tags ndpi \
+            -ldflags="-s -w -X main.version=${{ github.ref_name }}" \
+            -o silver-ndpi-plugin-linux-${{ matrix.goarch }} \
+            ./ndpi/...
+
+      - name: Upload nDPI artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: silver-ndpi-plugin-linux-${{ matrix.goarch }}
+          path: silver-ndpi-plugin-linux-${{ matrix.goarch }}
+
+  package:
+    needs: [build-silver, build-ndpi]
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download Silver artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: silver-plugin-linux-*
+          merge-multiple: true
+
+      - name: Download Silver-nDPI artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: silver-ndpi-plugin-linux-*
+          merge-multiple: true
+
+      - name: Package Silver extension
+        run: |
+          mkdir -p silver-pkg
+          cp extension.json silver-pkg/
+          cp silver-plugin-linux-amd64 silver-pkg/
+          cp silver-plugin-linux-arm64 silver-pkg/
+          tar -czf silver-extension.tar.gz -C silver-pkg .
+
+      - name: Package Silver-nDPI extension
+        run: |
+          mkdir -p silver-ndpi-pkg
+          cp ndpi/extension.json silver-ndpi-pkg/
+          cp silver-ndpi-plugin-linux-amd64 silver-ndpi-pkg/
+          cp silver-ndpi-plugin-linux-arm64 silver-ndpi-pkg/
+          tar -czf silver-ndpi-extension.tar.gz -C silver-ndpi-pkg .
 
       - name: Sign with minisign
         run: |
@@ -116,6 +191,7 @@ jobs:
           if [ -n "${{ secrets.MINISIGN_SECRET_KEY }}" ]; then
             echo "${{ secrets.MINISIGN_SECRET_KEY }}" > /tmp/minisign.key
             minisign -Sm silver-extension.tar.gz -s /tmp/minisign.key
+            minisign -Sm silver-ndpi-extension.tar.gz -s /tmp/minisign.key
             rm /tmp/minisign.key
           fi
 
@@ -125,8 +201,8 @@ jobs:
           files: |
             silver-extension.tar.gz
             silver-extension.tar.gz.minisig
-            silver-plugin-linux-amd64
-            silver-plugin-linux-arm64
+            silver-ndpi-extension.tar.gz
+            silver-ndpi-extension.tar.gz.minisig
           generate_release_notes: true
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
