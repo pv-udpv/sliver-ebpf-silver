@@ -1,0 +1,15 @@
+# e2b.toml — Silver-enabled sandbox template
+# Build: e2b template build -d .
+# Use:   e2b sandbox create silver-observability
+
+[template]
+name = "silver-observability"
+dockerfile = "Dockerfile"  # or use setup_cmd below
+
+# Postinit: starts Silver stack on every sandbox boot
+start_cmd = "/opt/silver/sbx-postinit.sh"
+
+[template.env]
+SILVER_IFACE = "eth0"
+DAMON_ENABLED = "1"
+PATHWAY_ENABLED = "1"
