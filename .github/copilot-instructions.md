@@ -1,7 +1,7 @@
 # Copilot Instructions — sliver-ebpf-silver
 
 > Loaded automatically by GitHub Copilot coding agent. Keep concise and specific.
-> Primary language: **Shell**. Default branch: `main`.
+> Primary languages: **Go, Shell**. Default branch: `main`.
 
 ## Project intent
 
@@ -13,9 +13,10 @@
 
 ## Language rules
 
-- POSIX-compatible where possible; mark `#!/usr/bin/env bash` when using bash features.
-- `set -euo pipefail` at the top of every script.
-- `shellcheck` clean required.
+- Prefer POSIX `sh` where possible; use `#!/usr/bin/env bash` when bash features are required.
+- For POSIX `sh` scripts, use `set -eu` at the top.
+- For bash scripts, use `set -euo pipefail` at the top.
+- Keep shell scripts `shellcheck` clean.
 
 ## Commit & PR conventions
 

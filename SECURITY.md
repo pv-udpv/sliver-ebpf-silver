@@ -10,8 +10,8 @@ Report security issues privately via GitHub Security Advisories:
 
 https://github.com/pv-udpv/sliver-ebpf-silver/security/advisories/new
 
-For issues affecting multiple repos in the `pv-udpv` org, email the maintainer
-directly rather than filing a public issue.
+For issues affecting multiple repos in the `pv-udpv` org, open private
+security advisories in each affected repository rather than filing a public issue.
 
 We aim to acknowledge reports within **48 hours** and ship a fix or mitigation
 within **14 days** for high-severity issues.
